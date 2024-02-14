@@ -164,11 +164,20 @@ module testbench;
 		.reset(reset)
 	);
 	
-	reg [31:0] temp;
+	reg [15:0] temp [0:7];
 
 	initial begin
 		$dumpfile("testbench.vcd");
 		$dumpvars(0, testbench);
+
+		temp[0] = 16'hABCD;
+		temp[1] = 16'h1234;
+		temp[2] = 16'h3462;
+		temp[3] = 16'h2398;
+		temp[4] = 16'h2438;
+		temp[5] = 16'h0974;
+		temp[6] = 16'h6758;
+		temp[7] = 16'hBF76;
 		
 		addr_in_a = 0;
 		rden_a = 0; wren_a = 0;
@@ -178,8 +187,6 @@ module testbench;
 		rden_b = 0; wren_b = 0;
 		data_in_b = $random;
 
-		temp = $random;
-		
 		#0 clk = 0; reset = 0;
 		#1 reset = 1;
 		#1 clk = 1;
@@ -192,10 +199,10 @@ module testbench;
 			#0.1 i = i+1;
 			
 			if(i % 10 == 0) begin
-				addr_in_a = $random & 13'h1fff;
+				addr_in_a = $random & 13'hfff;
 				if(i % 30 == 0) begin
 					wren_a = 0;//interface_ready_a ? 1 : 0;
-					data_in_a = $random;
+					data_in_a = 0;//$random;
 				end
 				else begin
 					rden_a = interface_ready_a ? 1 : 0;
@@ -207,12 +214,14 @@ module testbench;
 			end
 
 			// P_b action
-			addr_in_b = temp;
-			temp = addr_in_a;
+			
+			//temp = addr_in_a;
 			//addr_in_b = addr_in_a;
 
-			if(i % 10 == 0)
+			if(i % 10 == 0) begin
+				addr_in_b = $random & 13'hfff;
 				rden_b = interface_ready_b ? 1 : 0;
+			end
 			else
 				rden_b = 0;
 				

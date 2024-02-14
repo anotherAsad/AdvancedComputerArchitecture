@@ -6,7 +6,7 @@
 3. In the north, processor, and in south, the snooper/L2 nexus is responsible to issue requests only when this module is ready. [interface_ready is for both Processor and Snooper/L2]
 4. Make *sure* that cache_miss_kickoff does not occur if there is an interrupt from the neighbor.
 5. Make *sure* that the cycle goes silent if access from neighbor occurs.
-6. To eliminate deadlock, let L1a 
+6. To eliminate deadlock between L1a and L1b while requesting each other for data, we have an arbiter/arbitrator that priorities L1a.
 */
 
 module L1_cache(
@@ -68,6 +68,7 @@ module L1_cache(
 	// *** *** *** hotlink signals *** *** *** //
 	wire [8:0] MESI_addr;
 
+	// hotlink_addr_hit is very, very costly in terms of resources.
 	wire hotlink_addr_hit = ~I[hotlink_addr_in[12:4]] && (hotlink_addr_in[31-:19] == tag_core[hotlink_addr_in[12:4]]);
 	wire invl_auth = hotlink_invl_in && hotlink_addr_hit;
 	wire read_auth = hotlink_read_in && hotlink_addr_hit;
@@ -78,12 +79,12 @@ module L1_cache(
 
 	// MESI_addr is the addr for MESI core
 	assign MESI_addr = (hotlink_interrupt) ? hotlink_addr_in[12:4] : line_addr;
-	assign hotlink_wren_out = read_auth;
+	assign hotlink_wren_out = read_auth & hotlink_interrupt;
 
 	// hotlink output port signals
 	assign hotlink_addr_out = addr_in_muxed;		// handles outgoing read request and invalidation requests. Is the very same as requested by CPU.
 	assign hotlink_read_out = cache_miss_kickoff;	// if there is a cache miss, we issue a read to the sister processor
-	assign hotlink_invl_out = S[MESI_addr] & modify_condition;		// if a shared block is going to get updated. || if there is a hotlink interrupt, we can not send one from here in the same cycle
+	assign hotlink_invl_out = S[line_addr] & modify_condition;		// if a shared block is going to get updated. || if there is a hotlink interrupt, we can not send one from here in the same cycle
 
 	// **************************************************** CPU SIDE HANDLING & CACHE_MISS_KICK_OFF **************************************************** //
 	// There was a valid request that caused a cache miss? kickoff the miss_recovery_protocol
@@ -132,7 +133,7 @@ module L1_cache(
 	always @(*) begin
 		// CPU interface														
 		data_out = memory_core[word_addr];
-		cache_hit = ~I[line_addr] & (tag_addr == tag_core[MESI_addr]);		// not invalid and tags match
+		cache_hit = ~I[line_addr] & (tag_addr == tag_core[line_addr]);		// not invalid and tags match
 		data_out_valid = rden_muxed & cache_hit;
 		// Memory interface
 		evictable_cacheline = {
@@ -172,7 +173,7 @@ module L1_cache(
 				S[MESI_addr] <= 1'b0;
 				I[MESI_addr] <= 1'b0;
 			end
-			if(hotlink_wren_in | read_auth) begin	// Shared flag when both cores have a common cacheline due to : (1) issuing a valid read request (2) when servicing a read request 
+			if(hotlink_wren_in | (read_auth & hotlink_interrupt)) begin	// Shared flag when both cores have a common cacheline due to : (1) issuing a valid read request (2) when servicing a read request 
 				M[MESI_addr] <= 1'b0;
 				E[MESI_addr] <= 1'b0;
 				S[MESI_addr] <= 1'b1;
@@ -184,7 +185,7 @@ module L1_cache(
 				S[MESI_addr] <= 1'b0;
 				I[MESI_addr] <= 1'b0;
 			end
-			else if(invl_auth) begin
+			else if(invl_auth & hotlink_interrupt) begin			// mask with interrupt to be sure about interrupt validity in L1b	
 				M[MESI_addr] <= 1'b0;
 				E[MESI_addr] <= 1'b0;
 				S[MESI_addr] <= 1'b0;
@@ -220,7 +221,7 @@ module L1_cache(
 			eviction_wren = 1'b0;
 		end
 		else if(assert_eviction) begin										// if NEIGHBOR accesses, all output signals are low.
-			snooper_addr = {tag_core[MESI_addr], MESI_addr, 4'b0000};
+			snooper_addr = {tag_core[line_addr], line_addr, 4'b0000};
 			snooper_read_valid = 1'b0;
 			eviction_wren = ~hotlink_interrupt;
 		end
@@ -230,6 +231,12 @@ module L1_cache(
 			eviction_wren = 1'b0;
 		end
 	end
+
+	wire [3:0] MESI_96 = {M[13'h9], E[13'h9], S[13'h9], I[13'h9]};
+	wire [3:0] tag_96 = tag_core[13'h9];
+
+	wire [3:0] MESI_2b1 = {M[13'h2b], E[13'h2b], S[13'h2b], I[13'h2b]};
+	wire [3:0] tag_2b1 = tag_core[13'h2b];
 endmodule
 
 module interrupt_arbiter(
