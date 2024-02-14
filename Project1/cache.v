@@ -9,7 +9,7 @@
 6. To eliminate deadlock, let L1a 
 */
 
-module cache(
+module L1_cache(
 	// cpu-cache interface
 	output wire interface_ready,
 	output reg  [31:0] data_out,
@@ -68,11 +68,11 @@ module cache(
 	// *** *** *** hotlink signals *** *** *** //
 	wire [8:0] MESI_addr;
 
-	wire hotlink_addr_hit = ~I[MESI_addr] && (hotlink_addr_in[31-:19] == tag_core[MESI_addr]);
+	wire hotlink_addr_hit = ~I[hotlink_addr_in[12:4]] && (hotlink_addr_in[31-:19] == tag_core[hotlink_addr_in[12:4]]);
 	wire invl_auth = hotlink_invl_in && hotlink_addr_hit;
 	wire read_auth = hotlink_read_in && hotlink_addr_hit;
 	assign valid_interrupt_received = invl_auth | read_auth;
-//	wire hotlink_interrupt = invl_auth | read_auth;
+	// [redefined as an input] hotlink_interrupt = invl_auth | read_auth;
 
 	wire modify_condition = wren_muxed & cache_hit & ~hotlink_interrupt;		// condition for setting modify flag.
 
@@ -197,7 +197,7 @@ module cache(
 	// WARN: Should take special care about the eviction of a cacheline on a miss, because southbound databus (evictable) has to manage hotlink reads too.
 	// ************************************************************************************************************************************************ //
 	// Timing Expectations:
-	// CLK 0   -> Issues new read address to NEIGHBOR, if fails, issue it to RAM. At any rate, prepare for eviction of new data
+	// CLK 0   -> Issue new read address to NEIGHBOR, if fails, issue it to RAM. At any rate, prepare for eviction of new data.
 	// CLK 1   -> Issues write address to the RAM for eviction. Initiates a wait of N cycles. || if NEIGHBOR tries to access, the cycle goes empty.
 	// CLK N+1 -> Captures the incoming data. When done, cache_hit becomes active. Potential cache writes are done.
 	// CLK N+2 -> Miss recovery mode is finished.
@@ -225,7 +225,7 @@ module cache(
 			eviction_wren = ~hotlink_interrupt;
 		end
 		else begin
-			snooper_addr = 32'dX;
+			snooper_addr = 32'd0;
 			snooper_read_valid = 1'b0;
 			eviction_wren = 1'b0;
 		end

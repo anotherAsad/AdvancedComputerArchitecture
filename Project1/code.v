@@ -1,252 +1,225 @@
-`default_nettype none
+`include "cache.v"
 
-/* INTENT OF DESIGN:
-1. Hotlink interrupts given absolute priority.
-2. Do not ever update memory_core (and periphernalia like tag_core and MESI_core) if there is a hotlink interrupt.
-3. In the north, processor, and in south, the snooper/L2 nexus is responsible to issue requests only when this module is ready. [interface_ready is for both Processor and Snooper/L2]
-4. Make *sure* that cache_miss_kickoff does not occur if there is an interrupt from the neighbor.
-5. Make *sure* that the cycle goes silent if access from neighbor occurs.
-6. To eliminate deadlock, let L1a 
+/*	INTENT OF DESIGN
+1. Relays signals from both caches to each other.
+2. Buffers/arbitrates between read/write requests of both L1s bound for L2.
 */
 
-module cache(
-	// cpu-cache interface
-	output wire interface_ready,
-	output reg  [31:0] data_out,
-	output reg  data_out_valid,
-	input  wire [31:0] data_in,
-	input  wire [31:0] addr_in,			// 2 LSbits are essentially useless.
+// magic memory. Can accept reads at any time. Releases random valid outputs after a fixed clock cycles of rden.
+// consume writes to oblivion. Release fake results after a few cycles.
+module memory(
+	output reg  [127:0] data_out,
+	output wire data_out_valid,
+	input  wire [127:0] data_in,
+	input  wire [031:0] addr_in,
 	input  wire rden, wren,
-	// cache-snooper interface
-	output reg  [031:0] snooper_addr,
-	output reg  [127:0] evictable_cacheline,	// used to provide requested data for sister processor as well
-	output reg  eviction_wren, snooper_read_valid,
-	input  wire [127:0] updated_cacheline,
-	input  wire cacheline_update_valid,			// also serves as an address override.
-	// hotlink input port
-	input  wire [031:0] hotlink_addr_in,		// used only for invalidation and read.
-	input  wire hotlink_invl_in, hotlink_read_in,
-	output wire hotlink_wren_out,				// responds with data on 'evictable cacheline' if read request matches.
-	// hotlink output port
-	output wire [031:0] hotlink_addr_out,		// used only for invalidation and read.
-	output wire hotlink_invl_out, hotlink_read_out,
-	input  wire hotlink_wren_in,				// tells if there was a horizontal hit, and the neighbor returned data
 	// misc. signals
-	output wire valid_interrupt_received,
-	input  wire hotlink_interrupt,
 	input  wire clk, reset
 );
 	integer i;
+	parameter DELAY = 5;
 	
-	reg [31:0] memory_core [0:2047];
-	reg [18:0] tag_core [0:511];
-
-	// MESI protocol state registers. Implemented in one-hot mode.
-	reg M [0:511];
-	reg E [0:511];
-	reg S [0:511];
-	reg I [0:511];
-
-	// latchables for miss handling
-	reg  [31:0] addr_in_latched, data_in_latched;
-	reg  wren_latched, rden_latched;
+	reg [127:0] gbg_data = 128'hFB63DA9647CC13DC9913FA22DEADBEEF;
 	
-	// internal, muxed signals
-	reg  [31:0] addr_in_muxed, data_in_muxed;
-	reg  wren_muxed, rden_muxed;
+	reg [DELAY:0] delay_line;
 	
-	reg  miss_recovery_mode;
-	reg  cache_hit;
-	wire cache_miss_kickoff;
-	reg  assert_eviction;
+	// alias the input 
+	always @(*) delay_line[0] = rden;
 	
-	// address breakdown for simplicity at zero cost.
-	wire [18:0] tag_addr  = addr_in_muxed[31-:19];		// 19 bits for tag
-	wire [08:0] line_addr = addr_in_muxed[12:4];		//  9 bits for line selection
-	wire [10:0] word_addr = addr_in_muxed[12:2];		// 11 bits for word selection.
-
-	// *** *** *** hotlink signals *** *** *** //
-	wire [8:0] MESI_addr;
-
-	wire hotlink_addr_hit = ~I[MESI_addr] && (hotlink_addr_in[31-:19] == tag_core[MESI_addr]);
-	wire invl_auth = hotlink_invl_in && hotlink_addr_hit;
-	wire read_auth = hotlink_read_in && hotlink_addr_hit;
-	assign valid_interrupt_received = invl_auth | read_auth;
-//	wire hotlink_interrupt = invl_auth | read_auth;
-
-	wire modify_condition = wren_muxed & cache_hit & ~hotlink_interrupt;		// condition for setting modify flag.
-
-	// MESI_addr is the addr for MESI core
-	assign MESI_addr = (hotlink_interrupt) ? hotlink_addr_in[12:4] : line_addr;
-	assign hotlink_wren_out = read_auth;
-
-	// hotlink output port signals
-	assign hotlink_addr_out = addr_in_muxed;		// handles outgoing read request and invalidation requests. Is the very same as requested by CPU.
-	assign hotlink_read_out = cache_miss_kickoff;	// if there is a cache miss, we issue a read to the sister processor
-	assign hotlink_invl_out = S[MESI_addr] & modify_condition;		// if a shared block is going to get updated. || if there is a hotlink interrupt, we can not send one from here in the same cycle
-
-	// **************************************************** CPU SIDE HANDLING & CACHE_MISS_KICK_OFF **************************************************** //
-	// There was a valid request that caused a cache miss? kickoff the miss_recovery_protocol
-	assign cache_miss_kickoff = (rden | wren) & ~cache_hit & ~miss_recovery_mode & ~hotlink_interrupt;	// final ANDs: masks new kickoffs when in recovery mode
-	assign interface_ready = !(miss_recovery_mode | hotlink_interrupt | assert_eviction);
-	
-	// miss recovery bit driver. We may add state latching logic here.
 	always @(posedge clk) begin
 		if(reset)
-			{addr_in_latched, data_in_latched, wren_latched, rden_latched, miss_recovery_mode} <= {64'd0, 2'b00, 1'b0};
-		else if(!hotlink_interrupt) begin				// don't do anything if there is an interrupt on hotlink.
-			if(cache_miss_kickoff) begin
-				miss_recovery_mode <= 1'b1;
-				addr_in_latched <= addr_in;
-				data_in_latched <= data_in;
-				wren_latched <= wren;
-				rden_latched <= rden;
-			end
-			else if(miss_recovery_mode & cache_hit)	begin		// miss_recovery mode should override input mux.
-				miss_recovery_mode <= 1'b0;
-				addr_in_latched <= 32'd0;
-				data_in_latched <= 32'd0;
-				wren_latched <= 1'b0;
-				rden_latched <= 1'b0;
-			end
-		end
+			delay_line[DELAY:1] <= 0;
+		else
+			delay_line[DELAY:1] <= delay_line[DELAY-1:0];
 	end
 	
-	// Input signal mux description
-	always @(*) begin
-		if(miss_recovery_mode) begin
-			addr_in_muxed = addr_in_latched;
-			data_in_muxed = data_in_latched;
-			wren_muxed = wren_latched;
-			rden_muxed = rden_latched;
-		end
-		else begin
-			addr_in_muxed = addr_in;
-			data_in_muxed = data_in;
-			wren_muxed = wren;
-			rden_muxed = rden;
-		end
-	end
-
-	// *** *** *** read driver *** *** *** //
-	always @(*) begin
-		// CPU interface														
-		data_out = memory_core[word_addr];
-		cache_hit = ~I[line_addr] & (tag_addr == tag_core[MESI_addr]);		// not invalid and tags match
-		data_out_valid = rden_muxed & cache_hit;
-		// Memory interface
-		evictable_cacheline = {
-			memory_core[{MESI_addr, 2'b11}],
-			memory_core[{MESI_addr, 2'b10}],
-			memory_core[{MESI_addr, 2'b01}],
-			memory_core[{MESI_addr, 2'b00}]
-		};
-	end
-
-	// *** *** *** write driver *** *** *** //
-	// This logic elegantly hangles the updates from sister processor. Even in the clk0, the line_addr is valid,
-	// and caters well for cacheline update target. WARN: this means the miss handler must return as soon as possible.
-	// Moreover, observe this module is not exclusively masked with ~hotlink_interrupt as enable. However, modify_condition implicitly is.
+	assign data_out_valid = delay_line[DELAY];
+	
 	always @(posedge clk) begin
-		if(modify_condition) begin	// don't worry about the device being ready, but don't update mem_core if there is an interrupt.
-			memory_core[word_addr] <= data_in_muxed;
-		end
-		else if((cacheline_update_valid & ~hotlink_interrupt) | hotlink_wren_in) begin			// sister cache gives a signal to write, while asserting an interrupt.
-			tag_core[line_addr] <= tag_addr;									// update tag, this should result in a cache hit presently.
-			memory_core[{line_addr, 2'b11}] <= updated_cacheline[127-:32];
-			memory_core[{line_addr, 2'b10}] <= updated_cacheline[095-:32];
-			memory_core[{line_addr, 2'b01}] <= updated_cacheline[063-:32];
-			memory_core[{line_addr, 2'b00}] <= updated_cacheline[031-:32];
-		end
-	end
-
-	// *** *** *** MESI core write driver *** *** *** //
-	always @(posedge clk) begin
-		if(reset)										// invalidate all cachelines in the beginning
-			for(i=0; i<512; i=i+1)
-				{M[i], E[i], S[i], I[i]} <= 4'b0001;
-		else begin
-			if(modify_condition) begin
-				M[MESI_addr] <= 1'b1;
-				E[MESI_addr] <= 1'b0;
-				S[MESI_addr] <= 1'b0;
-				I[MESI_addr] <= 1'b0;
-			end
-			if(hotlink_wren_in | read_auth) begin	// Shared flag when both cores have a common cacheline due to : (1) issuing a valid read request (2) when servicing a read request 
-				M[MESI_addr] <= 1'b0;
-				E[MESI_addr] <= 1'b0;
-				S[MESI_addr] <= 1'b1;
-				I[MESI_addr] <= 1'b0;
-			end
-			else if(cacheline_update_valid & ~hotlink_interrupt) begin
-				M[MESI_addr] <= 1'b0;
-				E[MESI_addr] <= 1'b1;
-				S[MESI_addr] <= 1'b0;
-				I[MESI_addr] <= 1'b0;
-			end
-			else if(invl_auth) begin
-				M[MESI_addr] <= 1'b0;
-				E[MESI_addr] <= 1'b0;
-				S[MESI_addr] <= 1'b0;
-				I[MESI_addr] <= 1'b1;
-			end
-		end
-	end
-
-	// *********************************************************** EVICTION & READ  CONTROL *********************************************************** //
-	// WARN: Should take special care about the eviction of a cacheline on a miss, because southbound databus (evictable) has to manage hotlink reads too.
-	// ************************************************************************************************************************************************ //
-	// Timing Expectations:
-	// CLK 0   -> Issues new read address to NEIGHBOR, if fails, issue it to RAM. At any rate, prepare for eviction of new data
-	// CLK 1   -> Issues write address to the RAM for eviction. Initiates a wait of N cycles. || if NEIGHBOR tries to access, the cycle goes empty.
-	// CLK N+1 -> Captures the incoming data. When done, cache_hit becomes active. Potential cache writes are done.
-	// CLK N+2 -> Miss recovery mode is finished.
-	always @(posedge clk or posedge reset) begin
 		if(reset)
-			assert_eviction <= 1'b0;
-		else if(!hotlink_interrupt) begin
-			if(cache_miss_kickoff & M[MESI_addr])
-				assert_eviction <= 1'b1;
-			else if(assert_eviction)
-				assert_eviction <= 1'b0;
-		end
-	end
-
-	// eviction address control. Doesn't matter if the neighbor is causing an interrupt, get rid of the evictable as soon as you can.
-	always @(*) begin
-		if(cache_miss_kickoff) begin										// if NEIGHBOR accesses, cache miss kickoff goes low.
-			snooper_addr = {addr_in[31:4], 4'b0000};
-			snooper_read_valid = ~hotlink_wren_in;
-			eviction_wren = 1'b0;
-		end
-		else if(assert_eviction) begin										// if NEIGHBOR accesses, all output signals are low.
-			snooper_addr = {tag_core[MESI_addr], MESI_addr, 4'b0000};
-			snooper_read_valid = 1'b0;
-			eviction_wren = ~hotlink_interrupt;
-		end
-		else begin
-			snooper_addr = 32'dX;
-			snooper_read_valid = 1'b0;
-			eviction_wren = 1'b0;
-		end
+			data_out <= 128'd0;
+		else if(delay_line[DELAY-1])
+			data_out <= gbg_data ^ {data_out[126:0], data_out[127]};
 	end
 endmodule
 
-module interrupt_arbiter(
-	output hotlink_interrupt_L1a,
-	output hotlink_interrupt_L1b,
-	input  irq_L1a, irq_L1b
-);
-	/*irqB->A | irqA->B  | INT A | INT B |
-	----------|----------|-------|-------|
-	*   0     |    0     |   0   |   0   |
-	*   0     |    1     |   0   |   1   |
-	*   1     |    0     |   1   |   0   |
-	*   1     |    1     |   0   |   1   |
-	*-------------------------------------
-	* If B casts an interrupt to A, it only passes if B isn't under interrupt itself.
-	* If A casts an interrupt to B, it always passes through and B gets under interrupt
-	*/
-	assign hotlink_interrupt_L1a = irq_L1a & ~irq_L1b;			// A is under interrupt if B is not
-	assign hotlink_interrupt_L1b = irq_L1b;						// B is under interrupt whenever A sends a valid interrupt.
+module testbench;
+	integer i = 0;
+	reg clk, reset;
+	
+	// cache-mem interface
+	wire [031:0] mem_addr_a, mem_addr_b;
+	wire [127:0] evictable_cacheline_a, evictable_cacheline_b;
+	wire eviction_wren_a, mem_read_valid_a;
+	wire eviction_wren_b, mem_read_valid_b;
+	wire [127:0] updated_cacheline_a, updated_cacheline_b;
+	wire cacheline_update_valid_a, cacheline_update_valid_b;
+	
+	// cpu-cache interface
+	wire interface_ready_a, interface_ready_b;
+	wire [31:0] data_out_a, data_out_b;
+	wire data_out_valid_a, data_out_valid_b;
+	reg  [31:0] data_in_a, data_in_b;
+	reg  [31:0] addr_in_a, addr_in_b;			// 2 LSbits are essentially useless.
+	reg  rden_a, rden_b, wren_a, wren_b;
+	
+
+	wire [31:0] hotlink_addr_AtoB, hotlink_addr_BtoA;
+	wire hotlink_invl_AtoB, hotlink_read_AtoB;
+	wire hotlink_invl_BtoA, hotlink_read_BtoA;
+	wire hotlink_wren_AtoB, hotlink_wren_BtoA;
+
+	wire valid_interrupt_received_a, valid_interrupt_received_b;
+	wire hotlink_interrupt_a, hotlink_interrupt_b;
+
+	interrupt_arbiter interrupt_arbiter_inst(
+		.hotlink_interrupt_L1a(hotlink_interrupt_a),
+		.hotlink_interrupt_L1b(hotlink_interrupt_b),
+		.irq_L1a(valid_interrupt_received_a),
+		.irq_L1b(valid_interrupt_received_b)
+	);
+
+	L1_cache L1a(
+		.interface_ready(interface_ready_a),
+		.data_out(data_out_a),
+		.data_out_valid(data_out_valid_a),
+		.data_in(data_in_a),
+		.addr_in(addr_in_a),			// 2 LSbits are essentially useless.
+		.rden(rden_a), .wren(wren_a),
+		// cache-snooper interface
+		.snooper_addr(mem_addr_a),
+		.evictable_cacheline(evictable_cacheline_a),
+		.eviction_wren(eviction_wren_a),
+		.snooper_read_valid(mem_read_valid_a),
+		.updated_cacheline(updated_cacheline_a),
+		.cacheline_update_valid(cacheline_update_valid_a),		// also serves as an address override.
+		// hotlink input port
+		.hotlink_addr_in(hotlink_addr_BtoA),		// used only for invalidation and read.
+		.hotlink_invl_in(hotlink_invl_BtoA),
+		.hotlink_read_in(hotlink_read_BtoA),
+		.hotlink_wren_out(hotlink_wren_AtoB),				// responds with data on 'evictable cacheline' if read request matches.
+		// hotlink output port
+		.hotlink_addr_out(hotlink_addr_AtoB),		// used only for invalidation and read.
+		.hotlink_invl_out(hotlink_invl_AtoB),
+		.hotlink_read_out(hotlink_read_AtoB),
+		.hotlink_wren_in(hotlink_wren_BtoA),				// tells if there was a horizontal hit, and the neighbor returned data
+		// misc. signals
+		.valid_interrupt_received(valid_interrupt_received_a),
+		.hotlink_interrupt(hotlink_interrupt_a),
+		.clk(clk), .reset(reset)
+	);
+
+	L1_cache L1b(
+		.interface_ready(interface_ready_b),
+		.data_out(data_out_b),
+		.data_out_valid(data_out_valid_b),
+		.data_in(data_in_b),
+		.addr_in(addr_in_b),			// 2 LSbits are essentially useless.
+		.rden(rden_b), .wren(wren_b),
+		// cache-snooper interface
+		.snooper_addr(mem_addr_b),
+		.evictable_cacheline(evictable_cacheline_b),
+		.eviction_wren(eviction_wren_b),
+		.snooper_read_valid(mem_read_valid_b),
+		.updated_cacheline(updated_cacheline_b),
+		.cacheline_update_valid(cacheline_update_valid_b),		// also serves as an address override.
+		// hotlink input port
+		.hotlink_addr_in(hotlink_addr_AtoB),		// used only for invalidation and read.
+		.hotlink_invl_in(hotlink_invl_AtoB),
+		.hotlink_read_in(hotlink_read_AtoB),
+		.hotlink_wren_out(hotlink_wren_BtoA),				// responds with data on 'evictable cacheline' if read request matches.
+		// hotlink output port
+		.hotlink_addr_out(hotlink_addr_BtoA),		// used only for invalidation and read.
+		.hotlink_invl_out(hotlink_invl_BtoA),
+		.hotlink_read_out(hotlink_read_BtoA),
+		.hotlink_wren_in(hotlink_wren_AtoB),				// tells if there was a horizontal hit, and the neighbor returned data
+		// misc. signals
+		.valid_interrupt_received(valid_interrupt_received_b),
+		.hotlink_interrupt(hotlink_interrupt_b),
+		.clk(clk), .reset(reset)
+	);
+	
+	
+	memory memory_inst_A(
+		.data_out(updated_cacheline_a),
+		.data_out_valid(cacheline_update_valid_a),
+		.data_in(evictable_cacheline_a),
+		.addr_in(mem_addr_a),
+		.rden(mem_read_valid_a),
+		.wren(eviction_wren_a),
+		// misc. signals
+		.clk(clk),
+		.reset(reset)
+	);
+
+	memory memory_inst_B(
+		.data_out(updated_cacheline_b),
+		.data_out_valid(cacheline_update_valid_b),
+		.data_in(evictable_cacheline_b),
+		.addr_in(mem_addr_b),
+		.rden(mem_read_valid_b),
+		.wren(eviction_wren_b),
+		// misc. signals
+		.clk(clk),
+		.reset(reset)
+	);
+	
+	reg [31:0] temp;
+
+	initial begin
+		$dumpfile("testbench.vcd");
+		$dumpvars(0, testbench);
+		
+		addr_in_a = 0;
+		rden_a = 0; wren_a = 0;
+		data_in_a = $random;
+
+		addr_in_b = 0;
+		rden_b = 0; wren_b = 0;
+		data_in_b = $random;
+
+		temp = $random;
+		
+		#0 clk = 0; reset = 0;
+		#1 reset = 1;
+		#1 clk = 1;
+		#1 clk = 0;
+		#1 reset = 0;
+
+		repeat(80000) begin
+			#1 clk = ~clk;
+			
+			#0.1 i = i+1;
+			
+			if(i % 10 == 0) begin
+				addr_in_a = $random & 13'h1fff;
+				if(i % 30 == 0) begin
+					wren_a = 0;//interface_ready_a ? 1 : 0;
+					data_in_a = $random;
+				end
+				else begin
+					rden_a = interface_ready_a ? 1 : 0;
+				end
+			end
+			else begin
+				rden_a = 0;
+				wren_a = 0;
+			end
+
+			// P_b action
+			addr_in_b = temp;
+			temp = addr_in_a;
+			//addr_in_b = addr_in_a;
+
+			if(i % 10 == 0)
+				rden_b = interface_ready_b ? 1 : 0;
+			else
+				rden_b = 0;
+				
+			#1 clk = ~clk;
+		end
+		
+		$finish;
+	end
 endmodule
+
