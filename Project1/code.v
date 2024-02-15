@@ -1,4 +1,5 @@
 `include "cache.v"
+`include "snooper.v"
 
 /*	INTENT OF DESIGN
 1. Relays signals from both caches to each other.
@@ -14,6 +15,9 @@ module memory(
 	input  wire [031:0] addr_in,
 	input  wire rden, wren,
 	// misc. signals
+	input  wire client_id_in,
+	output wire client_id_out,
+	input  wire en,
 	input  wire clk, reset
 );
 	integer i;
@@ -21,25 +25,30 @@ module memory(
 	
 	reg [127:0] gbg_data = 128'hFB63DA9647CC13DC9913FA22DEADBEEF;
 	
-	reg [DELAY:0] delay_line;
+	reg [1:0] delay_line [0:DELAY];
 	
 	// alias the input 
-	always @(*) delay_line[0] = rden;
+	always @(*) delay_line[0] = {client_id_in, rden};
 	
 	always @(posedge clk) begin
-		if(reset)
-			delay_line[DELAY:1] <= 0;
-		else
-			delay_line[DELAY:1] <= delay_line[DELAY-1:0];
+		for(i=DELAY; i>0; i -= 1) begin
+			if(reset)
+				delay_line[i] <= 0;
+			else if(en)
+				delay_line[i] <= delay_line[i-1];
+		end
 	end
 	
-	assign data_out_valid = delay_line[DELAY];
+	assign data_out_valid = delay_line[DELAY][0];
+	assign client_id_out  = delay_line[DELAY][1];
 	
 	always @(posedge clk) begin
 		if(reset)
 			data_out <= 128'd0;
-		else if(delay_line[DELAY-1])
-			data_out <= gbg_data ^ {data_out[126:0], data_out[127]};
+		else if(en) begin
+			if(delay_line[DELAY-1][0])
+				data_out <= gbg_data ^ {data_out[126:0], data_out[127]};
+		end
 	end
 endmodule
 
@@ -47,7 +56,7 @@ module testbench;
 	integer i = 0;
 	reg clk, reset;
 	
-	// cache-mem interface
+	// cache-snooper interface
 	wire [031:0] mem_addr_a, mem_addr_b;
 	wire [127:0] evictable_cacheline_a, evictable_cacheline_b;
 	wire eviction_wren_a, mem_read_valid_a;
@@ -63,7 +72,7 @@ module testbench;
 	reg  [31:0] addr_in_a, addr_in_b;			// 2 LSbits are essentially useless.
 	reg  rden_a, rden_b, wren_a, wren_b;
 	
-
+	// hotlink wireup
 	wire [31:0] hotlink_addr_AtoB, hotlink_addr_BtoA;
 	wire hotlink_invl_AtoB, hotlink_read_AtoB;
 	wire hotlink_invl_BtoA, hotlink_read_BtoA;
@@ -138,28 +147,59 @@ module testbench;
 		.hotlink_interrupt(hotlink_interrupt_b),
 		.clk(clk), .reset(reset)
 	);
-	
-	
-	memory memory_inst_A(
-		.data_out(updated_cacheline_a),
-		.data_out_valid(cacheline_update_valid_a),
-		.data_in(evictable_cacheline_a),
-		.addr_in(mem_addr_a),
-		.rden(mem_read_valid_a),
-		.wren(eviction_wren_a),
+
+	// Snooper-memory bindings
+	wire [031:0] mem_addr_StoD;		// StoD is snooper to Downstream
+	wire [127:0] cacheline_StoD, cacheline_DtoS; 
+	wire wren_StoD, rden_StoD, valid_DtoS;
+	wire downstream_enable;
+	wire client_id_StoD, client_id_DtoS;
+
+	wire pause_processors;
+
+	arbiter arbiter_L1(
+		// LXa interface
+		.mem_addr_a(mem_addr_a),
+		.cacheline_wr_a(evictable_cacheline_a),
+		.rden_a(mem_read_valid_a),
+		.wren_a(eviction_wren_a),
+		.cacheline_rd_a(updated_cacheline_a),
+		.cacheline_rd_valid_a(cacheline_update_valid_a),
+		.LXa_responding(hotlink_wren_AtoB),
+		// LXb interface
+		.mem_addr_b(mem_addr_b),
+		.cacheline_wr_b(evictable_cacheline_b),
+		.rden_b(mem_read_valid_b),
+		.wren_b(eviction_wren_b),
+		.cacheline_rd_b(updated_cacheline_b),
+		.cacheline_rd_valid_b(cacheline_update_valid_b),
+		.LXb_responding(hotlink_wren_BtoA),
+		// memory interface
+		.client_id(client_id_DtoS),						// used for returning read requests. Tells about who the issuing client was. 1 for B, 0 for A.
+		.client_id_downstream(client_id_StoD),
+		.downstream_enable(downstream_enable),
+		.mem_addr_out(mem_addr_StoD),
+		.downstream_cacheline(cacheline_StoD),
+		.rden_out(rden_StoD),
+		.wren_out(wren_StoD),
+		.upstream_cacheline(cacheline_DtoS),
+		.incoming_cacheline_valid(valid_DtoS),
 		// misc. signals
-		.clk(clk),
-		.reset(reset)
+		.downstream_buffer_filled(pause_processors),			// is an output signal to the processors
+		.clk(clk), .reset(reset)
 	);
 
-	memory memory_inst_B(
-		.data_out(updated_cacheline_b),
-		.data_out_valid(cacheline_update_valid_b),
-		.data_in(evictable_cacheline_b),
-		.addr_in(mem_addr_b),
-		.rden(mem_read_valid_b),
-		.wren(eviction_wren_b),
+	memory memory_inst(
+		.data_out(cacheline_DtoS),
+		.data_out_valid(valid_DtoS),
+		.data_in(cacheline_StoD),
+		.addr_in(mem_addr_StoD),
+		.rden(rden_StoD),
+		.wren(wren_StoD),
+		.en(downstream_enable),
 		// misc. signals
+		.client_id_in(client_id_StoD),
+		.client_id_out(client_id_DtoS),
 		.clk(clk),
 		.reset(reset)
 	);
@@ -199,13 +239,13 @@ module testbench;
 			#0.1 i = i+1;
 			
 			if(i % 10 == 0) begin
-				addr_in_a = $random & 13'hfff;
+				addr_in_a = $random | 16'h1fff;
 				if(i % 30 == 0) begin
-					wren_a = 0;//interface_ready_a ? 1 : 0;
+					wren_a = interface_ready_a & ~pause_processors ? 1 : 0;
 					data_in_a = 0;//$random;
 				end
 				else begin
-					rden_a = interface_ready_a ? 1 : 0;
+					rden_a = interface_ready_a & ~pause_processors ? 1 : 0;
 				end
 			end
 			else begin
@@ -219,8 +259,8 @@ module testbench;
 			//addr_in_b = addr_in_a;
 
 			if(i % 10 == 0) begin
-				addr_in_b = $random & 13'hfff;
-				rden_b = interface_ready_b ? 1 : 0;
+				addr_in_b = $random & 13'h1fff;
+				rden_b = interface_ready_b & ~pause_processors ? 1 : 0;
 			end
 			else
 				rden_b = 0;

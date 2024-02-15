@@ -1,6 +1,7 @@
 `default_nettype none
 
 /* INTENT OF DESIGN:
+0. Hotlink is essentially an embedded snooper.
 1. Hotlink interrupts given absolute priority.
 2. Do not ever update memory_core (and periphernalia like tag_core and MESI_core) if there is a hotlink interrupt.
 3. In the north, processor, and in south, the snooper/L2 nexus is responsible to issue requests only when this module is ready. [interface_ready is for both Processor and Snooper/L2]
@@ -237,6 +238,16 @@ module L1_cache(
 
 	wire [3:0] MESI_2b1 = {M[13'h2b], E[13'h2b], S[13'h2b], I[13'h2b]};
 	wire [3:0] tag_2b1 = tag_core[13'h2b];
+
+	initial begin
+		for(i = 0; i<512; i+=1) begin
+			tag_core[i] <= 32'd0;									// update tag, this should result in a cache hit presently.
+			memory_core[{i, 2'b11}] <= 32'd0;
+			memory_core[{i, 2'b10}] <= 32'd0;
+			memory_core[{i, 2'b01}] <= 32'd0;
+			memory_core[{i, 2'b00}] <= 32'd0;
+		end
+	end
 endmodule
 
 module interrupt_arbiter(
