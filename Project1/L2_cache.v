@@ -5,7 +5,7 @@ module L2_cache(
 	output reg  [127:0] data_out,
 	output reg  data_out_valid,
 	input  wire [127:0] data_in,
-	input  wire [31:0] addr_in,			// 2 LSbits are essentially useless.
+	input  wire [031:0] addr_in,			// 2 LSbits are essentially useless.
 	input  wire rden, wren,
 	// downstream interface
 	output reg  [031:0] snooper_addr,

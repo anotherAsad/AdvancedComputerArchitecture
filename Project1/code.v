@@ -182,6 +182,15 @@ module testbench;
 		rden_b = 0; wren_b = 0;
 		data_in_b = $random;
 
+		addr_in_c = 0;
+		rden_c = 0; wren_c = 0;
+		data_in_c = $random;
+
+		addr_in_d = 0;
+		rden_d = 0; wren_d = 0;
+		data_in_d = $random;
+
+
 		#0 clk = 0; reset = 0;
 		#1 reset = 1;
 		#1 clk = 1;
@@ -192,19 +201,11 @@ module testbench;
 			#1 clk = ~clk;
 			
 			#0.1 i = i+1;
-
-			if(addr_in_a[31:13] == 13'h2b1)
-				$display("hit");
 			
+			// P_a action
 			if(i % 10 == 0) begin
-				addr_in_a = $random & 16'h1fff;
-				if(i % 30 == 0) begin
-					wren_a = interface_ready_a & ~pause_processors ? 1 : 0;
-					data_in_a = 0;//$random;
-				end
-				else begin
-					rden_a = interface_ready_a & ~pause_processors ? 1 : 0;
-				end
+				addr_in_a = $random & 13'h1fff;
+				rden_a = interface_ready_a & ~pause_processors ? 1 : 0;
 			end
 			else begin
 				rden_a = 0;
@@ -212,16 +213,28 @@ module testbench;
 			end
 
 			// P_b action
-			
-			//temp = addr_in_a;
-			//addr_in_b = addr_in_a;
-
-			if(i % 10 == 0) begin
+			if(i % 10 == 1) begin
 				addr_in_b = $random & 13'h1fff;
 				rden_b = interface_ready_b & ~pause_processors ? 1 : 0;
 			end
 			else
 				rden_b = 0;
+
+			// P_c action
+			if(i % 10 == 2) begin
+				addr_in_c = $random & 13'h1fff;
+				rden_c = interface_ready_c & ~pause_processors ? 1 : 0;
+			end
+			else
+				rden_c = 0;
+
+			// P_d action
+			if(i % 10 == 3) begin
+				addr_in_d = $random & 13'h1fff;
+				rden_d = interface_ready_d & ~pause_processors ? 1 : 0;
+			end
+			else
+				rden_d = 0;
 				
 			#1 clk = ~clk;
 		end

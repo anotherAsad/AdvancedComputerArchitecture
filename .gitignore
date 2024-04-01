@@ -1,2 +1,4 @@
 *.zip
 *.vcd
+*.tar.gz
+*.out

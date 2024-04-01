@@ -208,8 +208,19 @@ module L2_complex(
 	output wire pause_processors,
 	input  wire clk, reset
 );
-	assign client_id_out_a =  client_id_in_a;
-	assign client_id_out_b =  client_id_in_b;
+	reg  tracker_a, tracker_b;
+
+	always @(posedge clk) begin
+		if(reset)
+			{tracker_a, tracker_b} <= 2'b00;
+		else begin
+			tracker_a <= valid_DtoS ? ~tracker_a : tracker_a;
+			tracker_b <= valid_DtoS ? ~tracker_b : tracker_b; 
+		end
+	end
+
+	assign client_id_out_a = tracker_a;
+	assign client_id_out_b = tracker_b;
 	// cache-snooper interface
 	wire [031:0] mem_addr_a, mem_addr_b;
 	wire [127:0] evictable_cacheline_a, evictable_cacheline_b;
