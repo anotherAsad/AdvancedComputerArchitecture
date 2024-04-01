@@ -30,10 +30,13 @@ module instruction_queue(
 		for(i=0; i<256; i++)
 			instr_mem[i] = 32'h00000013;			// nop
  
-		instr_mem[8'h00] = 32'h00702383;			// li		x7, 7
-		instr_mem[8'h01] = 32'h00502283;			// li		x5, 5
-		instr_mem[8'h02] = 32'h007280b3;			// add		x1, x5, x7
-		instr_mem[8'h03] = 32'h005080b3;			// add		x1, x1, x5
-		instr_mem[8'h04] = 32'h02728133;			// mul		x2, x5, x7
+		instr_mem[8'h0] = 32'h24402083;         // lw           x1, 580(x0)
+		instr_mem[8'h1] = 32'h0f002103;         // lw           x2, 240(x0)
+		instr_mem[8'h2] = 32'h06202183;         // lw           x3, 98(x0)
+		instr_mem[8'h3] = 32'h16d02203;         // lw           x4, 365(x0)
+		instr_mem[8'h4] = 32'h007280b3;         // add          x1, x5, x7
+		instr_mem[8'h5] = 32'h005080b3;         // add          x1, x1, x5
+		instr_mem[8'h6] = 32'h02728133;         // mul          x2, x5, x7
+		instr_mem[8'h7] = 32'h00000013;         // nop
 	end
 endmodule

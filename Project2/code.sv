@@ -24,7 +24,6 @@ module testbench;
 	wire instr2_isadd, instr2_ismul, instr2_ismem;	// instruction 2 flags for valid instruction type. One-hot: Only 1 is true.
 	// status of reservation stations
 	wire mem_ready, adder_ready, multiplier_ready;
-	wire CDB_issued_stall;
 
 	dispatch_and_decode_unit dispatch_and_decode_unit_inst(
 		// instr queue interface
@@ -38,25 +37,23 @@ module testbench;
 		// CDB arbitrator interface
 		.instr1_ismem(instr1_ismem), .instr1_isadd(instr1_isadd), .instr1_ismul(instr1_ismul),		// one-hot
 		.instr2_ismem(instr2_ismem), .instr2_isadd(instr2_isadd), .instr2_ismul(instr2_ismul),		// one-hot
-		.CDB_issued_stall(CDB_issued_stall),								// dispatch stall from CDB_arbitrator should end up here.
 		// status of reservation stations
 		.mem_ready(mem_ready), .adder_ready(adder_ready), .multiplier_ready(multiplier_ready)
 	);
 
 	// Effective CDB resolved tag and data.
-	wire [07:0] CDB_tag_in_effect;
-	wire [31:0] CDB_data_in_effect;
+	wire [23:0] CDB_tag_serialized;
+	wire [95:0] CDB_data_serialized;
 	wire [07:0] CDB_tag_multiplier, CDB_tag_adder, CDB_tag_mem;				// CDB resolved tag input
 	wire [31:0] CDB_data_multiplier, CDB_data_adder, CDB_data_mem;			// CDB resolved data input
 	// rd_tag interface.
 	wire [7:0] acceptor_tag_add, acceptor_tag_mul, acceptor_tag_mem; 
 	wire [7:0] regfile_rd_tag_A, regfile_rd_tag_B; 		// regfile bound rd tags
 
-	CDB_arbitrator CDB_arbitrator_inst(
-		.dispatch_stall(CDB_issued_stall),				// stall further dispatches in case of multiple CDB writes.
+	CDB_bus_controller CDB_bus_controller_inst(
 		// Effective CDB resolved tag and data.
-		.tag_in_effect(CDB_tag_in_effect),
-		.data_in_effect(CDB_data_in_effect),
+		.CDB_tag_serialized(CDB_tag_serialized),
+		.CDB_data_serialized(CDB_data_serialized),
 		// CDB resolved tag input
 		.CDB_tag_multiplier(CDB_tag_multiplier),
 		.CDB_tag_adder(CDB_tag_adder),
@@ -70,9 +67,7 @@ module testbench;
 		.acceptor_tag_add(acceptor_tag_add),
 		.acceptor_tag_mul(acceptor_tag_mul),
 		.acceptor_tag_mem(acceptor_tag_mem), 
-		.regfile_rd_tag_A(regfile_rd_tag_A), .regfile_rd_tag_B(regfile_rd_tag_B),	// regfile bound rd tags
-		// misc. signals
-		.en(1'b1), .clk(clk), .reset(reset)
+		.regfile_rd_tag_A(regfile_rd_tag_A), .regfile_rd_tag_B(regfile_rd_tag_B)	// regfile bound rd tags
 	);
 
 	wire [31:0] dout_r1_A, dout_r2_A, dout_r1_B, dout_r2_B;
@@ -92,8 +87,8 @@ module testbench;
 		.dout_r1_B(dout_r1_B), .dout_r2_B(dout_r2_B),
 		.dtype_r1_B(dtype_r1_B), .dtype_r2_B(dtype_r2_B),		// 0 for data, 1 for tag.
 		// CDB input interface
-		.data_in_CDB(CDB_data_in_effect),				// comes from the CDB
-		.tag_in_CDB(CDB_tag_in_effect),
+		.CDB_data_serialized(CDB_data_serialized),				// comes from the CDB
+		.CDB_tag_serialized(CDB_tag_serialized),
 		// misc. signals.
 		.en(1'b1), .clk(clk), .reset(reset)
 	);
@@ -106,7 +101,7 @@ module testbench;
 	
 	source_mux mem_source_mux(
 		// instruction 1
-		.instr1_rs1(dout_r1_A), .instr1_rs2({20'd0, instr2[31-:12]}),		// has tag in lower byte if needed
+		.instr1_rs1(dout_r1_A), .instr1_rs2({20'd0, instr1[31-:12]}),		// has tag in lower byte if needed
 		.instr1_dtype_rs1(1'b0), .instr1_dtype_rs2(1'b0),
 		// instruction 2
 		.instr2_rs1(dout_r1_B), .instr2_rs2({20'd0, instr2[31-:12]}),		// has tag in lower byte if needed
@@ -160,8 +155,8 @@ module testbench;
 		.src_in_valid(instr1_isadd | instr2_isadd),						// controlled by decoder.
 		.src_in1_type(dtype_rs1_add), .src_in2_type(dtype_rs2_add),		// 0 for data, 1 for tag.
 		// CDB input interface
-		.data_in_CDB(CDB_data_in_effect),				// comes from the CDB
-		.tag_in_CDB(CDB_tag_in_effect),
+		.CDB_data_serialized(CDB_data_serialized),				// comes from the CDB
+		.CDB_tag_serialized(CDB_tag_serialized),
 		// CDB data_out interface
 		.data_out_valid(),
 		.data_out(CDB_data_adder),
@@ -198,8 +193,8 @@ module testbench;
 		.src_in_valid(instr1_ismul | instr2_ismul),						// controlled by decoder.
 		.src_in1_type(dtype_rs1_mul), .src_in2_type(dtype_rs2_mul),		// 0 for data, 1 for tag.
 		// CDB input interface
-		.data_in_CDB(CDB_data_in_effect),				// comes from the CDB
-		.tag_in_CDB(CDB_tag_in_effect),
+		.CDB_data_serialized(CDB_data_serialized),				// comes from the CDB
+		.CDB_tag_serialized(CDB_tag_serialized),
 		// CDB data_out interface
 		.data_out_valid(),
 		.data_out(CDB_data_multiplier),

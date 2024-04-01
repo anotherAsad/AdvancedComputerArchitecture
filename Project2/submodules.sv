@@ -27,7 +27,6 @@ module dispatch_and_decode_unit(
 	// CDB arbitrator interface
 	output wire instr1_ismem, instr1_isadd, instr1_ismul,		// one-hot
 	output wire instr2_ismem, instr2_isadd, instr2_ismul,		// one-hot
-	input  wire CDB_issued_stall,							// dispatch stall from CDB_arbitrator should end up here.
 	// status of reservation stations
 	input  wire mem_ready, adder_ready, multiplier_ready
 );
@@ -45,7 +44,7 @@ module dispatch_and_decode_unit(
 	wire instr2_ready_if_add = (instr2_type == 2'b10) && !(instr1_type == 2'b10) && adder_ready;	// will cause instr2 to lag if instr1 is add type
 	wire instr2_ready_if_mul = (instr2_type == 2'b11) && !(instr1_type == 2'b11) && multiplier_ready;
 
-	// STALLS FOR HAZARD AVOIDANCE 
+	// STALLS FOR HAZARD AND RACE CONDITION AVOIDANCE 
 	// Ensure that two instructions with same destination are not issued at once.
 	// Ensure that ins2 doesn't use instr1_rd as as instr2_rs1 or instr2_rs2. This will cause wrong rs fetch by ins2.
 	wire instr_destination_conflict = (
@@ -56,9 +55,9 @@ module dispatch_and_decode_unit(
 
 	wire instr2_consumable = !instr_destination_conflict && (instr2_ready_if_mem | instr2_ready_if_add | instr2_ready_if_mul);
 
-	// an instruction is valid if it is consumable and there is the CDB bus does not have any pending writes.
-	assign instr1_valid = instr1_consumable & ~CDB_issued_stall;
-	assign instr2_valid = instr2_consumable & ~CDB_issued_stall;
+	// Used to have a CDB issued stall mask. Not needed with parallel implementation.
+	assign instr1_valid = instr1_consumable;
+	assign instr2_valid = instr2_consumable;
 	assign shift_count = {instr2_valid, instr1_valid};		// outputs in one-hot encoding
 
 	// *** *** *** *** Decoder Wire-up *** *** *** *** //
@@ -134,45 +133,35 @@ module source_mux(
 	end
 endmodule
 
-// 1. Arbitrates CDB outputs, and 2. chooses right tags for reg_file rd renaming.
-module CDB_arbitrator(
-	output wire dispatch_stall,				// stall further dispatches in case of multiple CDB writes.
+// 1. organizes CDB outputs, and 2. chooses right tags for reg_file rd renaming.
+module CDB_bus_controller(
 	// Effective CDB resolved tag and data.
-	output reg  [07:0] tag_in_effect,
-	output reg  [31:0] data_in_effect,
+	output wire [23:0] CDB_tag_serialized,
+	output wire [95:0] CDB_data_serialized,
 	input  wire [07:0] CDB_tag_multiplier, CDB_tag_adder, CDB_tag_mem,		// CDB resolved tag input
 	input  wire [31:0] CDB_data_multiplier, CDB_data_adder, CDB_data_mem,	// CDB resolved data input
 	// rd_tag interface.
 	input  wire instr1_isadd, instr1_ismul, instr1_ismem,	// instruction 1 flags for valid instruction type. One-hot: Only 1 is true.
 	input  wire instr2_isadd, instr2_ismul, instr2_ismem,	// instruction 2 flags for valid instruction type. One-hot: Only 1 is true.
 	input  wire [07:0] acceptor_tag_add, acceptor_tag_mul, acceptor_tag_mem, 
-	output reg  [07:0] regfile_rd_tag_A, regfile_rd_tag_B, 		// regfile bound rd tags
-	// misc. signals
-	input  wire en, clk, reset
+	output reg  [07:0] regfile_rd_tag_A, regfile_rd_tag_B 		// regfile bound rd tags
 );
-	// assert dispatch stall if more than two tags are valid. The following assigmnent implements the truth table for stalls
-	assign dispatch_stall = CDB_tag_multiplier[7] ? (CDB_tag_adder [7] | CDB_tag_mem[7]) : (CDB_tag_adder [7] & CDB_tag_mem[7]);
-
-	// *** *** *** *** CDB BUS MUX *** *** *** *** //
-	// Effective tag mux. Do not worry about hazards, register renaming/tagging at decode time has taken care of it.
+	// *** *** *** *** CDB BUS routing *** *** *** *** //
+	reg  [07:0] CDB_tag [0:2];
+	reg  [31:0] CDB_data [0:2];
+	
+	// Effective tag routing. Do not worry about hazards, register renaming/tagging at decode time has taken care of it.
 	always @(*) begin
-		if(CDB_tag_multiplier[7]) begin
-			tag_in_effect  <= CDB_tag_multiplier;
-			data_in_effect <= CDB_data_multiplier;
-		end
-		else if(CDB_tag_adder[7]) begin
-			tag_in_effect  <= CDB_tag_adder;
-			data_in_effect <= CDB_data_adder;
-		end
-		else if(CDB_tag_mem[7]) begin
-			tag_in_effect  <= CDB_tag_mem;
-			data_in_effect <= CDB_data_mem;
-		end
-		else begin
-			tag_in_effect  <= 8'd0;
-			data_in_effect <= 32'd0;
-		end
+		CDB_tag[0]  <= CDB_tag_multiplier;
+		CDB_data[0] <= CDB_data_multiplier;
+		CDB_tag[1]  <= CDB_tag_adder;
+		CDB_data[1] <= CDB_data_adder;
+		CDB_tag[2]  <= CDB_tag_mem;
+		CDB_data[2] <= CDB_data_mem;
 	end
+
+	assign CDB_tag_serialized  = {CDB_tag[0], CDB_tag[1], CDB_tag[2]};
+	assign CDB_data_serialized = {CDB_data[0], CDB_data[1], CDB_data[2]};
 
 	// *** *** *** *** RD TAG ROUTING *** *** *** *** //
 	// if instruction 1 is valid, choose the correct tag routs && assert valid signal to the required operational unit.
@@ -196,15 +185,3 @@ module CDB_arbitrator(
 			regfile_rd_tag_B = 8'd0;
 	end
 endmodule
-
-/*	dispatch_stall truth table
-		* + m | stall
-		0 0 0 = 0
-		0 0 1 = 0
-		0 1 0 = 0
-		0 1 1 = 1
-		1 0 0 = 0
-		1 0 1 = 1
-		1 1 0 = 1
-		1 1 1 = 1
-*/

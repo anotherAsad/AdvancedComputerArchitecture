@@ -12,16 +12,23 @@ module RegisterFile(
 	output reg  [31:0] dout_r1_B, dout_r2_B,
 	output reg  dtype_r1_B, dtype_r2_B,		// 0 for data, 1 for tag.
 	// CDB input interface
-	input  wire [31:0] data_in_CDB,				// comes from the CDB
-	input  wire [07:0] tag_in_CDB,
+	input  wire [95:0] CDB_data_serialized,				// comes from the CDB
+	input  wire [23:0] CDB_tag_serialized,
 	// misc. signals.
 	input  wire en, clk, reset
 );
-	integer i;
+	integer i, j;
 
 	reg  [31:0] reg_array [0:31];
 	reg  [00:0] reg_valid [0:31];
 	reg  [07:0] reg_intag [0:31];		// the arbiter tells us who to expect.
+
+	// CDB ser-des
+	wire [31:0] data_in_CDB [0:3];				// comes from the CDB
+	wire [07:0] tag_in_CDB [0:3];
+
+	assign {tag_in_CDB[0], tag_in_CDB[1], tag_in_CDB[2]} = CDB_tag_serialized;
+	assign {data_in_CDB[0], data_in_CDB[1], data_in_CDB[2]} = CDB_data_serialized;
 
 	// *** *** *** *** *** *** *** REG FILE OUTPUT CONTROL *** *** *** *** *** *** *** //
 	always @(*) begin
@@ -104,10 +111,12 @@ module RegisterFile(
 					end
 				end
 				else begin			// CDB initiated resolution
-					if(tag_match(reg_intag[i], tag_in_CDB)) begin
-						reg_array[i] <= data_in_CDB;
-						reg_valid[i] <= 1'b1;
-						reg_intag[i] <= 8'd0;
+					for(j=0; j<3; j+=1) begin
+						if(tag_match(reg_intag[i], tag_in_CDB[j])) begin
+							reg_array[i] <= data_in_CDB[j];
+							reg_valid[i] <= 1'b1;
+							reg_intag[i] <= 8'd0;
+						end
 					end
 				end
 			end

@@ -5,19 +5,19 @@ module AdditionReservationStation(
 	input  wire src_in_valid,					// controlled by decoder.
 	input  wire src_in1_type, src_in2_type,		// 0 for data, 1 for tag.
 	// CDB input interface
-	input  wire [31:0] data_in_CDB,				// comes from the CDB
-	input  wire [07:0] tag_in_CDB,
+	input  wire [95:0] CDB_data_serialized,				// comes from the CDB
+	input  wire [23:0] CDB_tag_serialized,
 	// CDB data_out interface
 	output reg  data_out_valid,
 	output reg  [31:0] data_out,
 	output reg  [07:0] reg_tag_out,
 	// dispatcher interface
 	output wire ready_for_instr,
-	output wire [07:0] acceptor_tag,			// {tag_valid, mem_type, add_type, mul_type, 2'b0, 3'dID}
+	output wire [07:0] acceptor_tag,			// {tag_valid, mem_type, add_type, mul_type, 1'b0, 3'dID}
 	// misc. signals
 	input  wire en, clk, reset
 );
-	integer i;
+	integer i, j;
 
 	reg  [07:0] CDB_offload;
 
@@ -32,6 +32,13 @@ module AdditionReservationStation(
 	reg  [00:0] src2_valid [0:7];
 	reg  [07:0] src2_intag [0:7];
 	reg  [31:0] src2_value [0:7];
+
+	// CDB ser-des
+	wire [31:0] data_in_CDB [0:3];				// comes from the CDB
+	wire [07:0] tag_in_CDB [0:3];
+
+	assign {tag_in_CDB[0], tag_in_CDB[1], tag_in_CDB[2]} = CDB_tag_serialized;
+	assign {data_in_CDB[0], data_in_CDB[1], data_in_CDB[2]} = CDB_data_serialized;
 
 	// *** *** *** *** *** *** *** ADDER AVAILABILITY HANDLING *** *** *** *** *** *** *** //
 	reg  [03:0] next_adder_ID;
@@ -103,19 +110,20 @@ module AdditionReservationStation(
 					end
 				end
 				else begin			// CDB based source population control
-					// operate on tag matches for src1
-					if(!src1_valid[i] && tag_match(src1_intag[i], tag_in_CDB)) begin
-						src1_valid[i] <= 1'b1;
-						src1_value[i] <= data_in_CDB;
-						src1_intag[i] <= {1'b0, 7'h0};
+					for(j=0; j<3; j+=1) begin
+						// operate on tag matches for src1
+						if(!src1_valid[i] && tag_match(src1_intag[i], tag_in_CDB[j])) begin
+							src1_valid[i] <= 1'b1;
+							src1_value[i] <= data_in_CDB[j];
+							src1_intag[i] <= {1'b0, 7'h0};
+						end
+						// operate on tag matches for src2
+						if(!src2_valid[i] && tag_match(src2_intag[i], tag_in_CDB[j])) begin
+							src2_valid[i] <= 1'b1;
+							src2_value[i] <= data_in_CDB[j];
+							src2_intag[i] <= {1'b0, 7'h0};
+						end
 					end
-					// operate on tag matches for src2
-					if(!src2_valid[i] && tag_match(src2_intag[i], tag_in_CDB)) begin
-						src2_valid[i] <= 1'b1;
-						src2_value[i] <= data_in_CDB;
-						src2_intag[i] <= {1'b0, 7'h0};
-					end
-
 				end
 			end
 		end

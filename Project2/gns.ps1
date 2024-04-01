@@ -1,4 +1,4 @@
-iverilog -g2005-sv code.sv
+iverilog -g2012 code.sv
 # iverilog code.v
 
 if($?){
