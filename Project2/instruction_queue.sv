@@ -30,13 +30,22 @@ module instruction_queue(
 		for(i=0; i<256; i++)
 			instr_mem[i] = 32'h00000013;			// nop
  
-		instr_mem[8'h0] = 32'h24402083;         // lw           x1, 580(x0)
-		instr_mem[8'h1] = 32'h0f002103;         // lw           x2, 240(x0)
-		instr_mem[8'h2] = 32'h06202183;         // lw           x3, 98(x0)
-		instr_mem[8'h3] = 32'h16d02203;         // lw           x4, 365(x0)
-		instr_mem[8'h4] = 32'h007280b3;         // add          x1, x5, x7
-		instr_mem[8'h5] = 32'h005080b3;         // add          x1, x1, x5
-		instr_mem[8'h6] = 32'h02728133;         // mul          x2, x5, x7
-		instr_mem[8'h7] = 32'h00000013;         // nop
+			instr_mem[8'h0] = 32'h00b02083;         // lw           x1, 11(x0)              # w0
+			instr_mem[8'h1] = 32'h00f02103;         // lw           x2, 15(x0)              # w1
+			instr_mem[8'h2] = 32'h01602183;         // lw           x3, 22(x0)              # w2
+			instr_mem[8'h3] = 32'h02d02203;         // lw           x4, 45(x0)              # a1
+			instr_mem[8'h4] = 32'h03e02283;         // lw           x5, 62(x0)              # a2
+			instr_mem[8'h5] = 32'h04f02303;         // lw           x6, 79(x0)              # a3
+
+			instr_mem[8'h6] = 32'h02408533;         // mul          x10, x1, x4
+			instr_mem[8'h7] = 32'h025105b3;         // mul          x11, x2, x5
+			instr_mem[8'h8] = 32'h00b50833;         // add          x16, x10, x11
+			instr_mem[8'h9] = 32'h02618633;         // mul          x12, x3, x6
+			instr_mem[8'ha] = 32'h00c80833;         // add          x16, x16, x12
+
+			instr_mem[8'hb] = 32'h002088b3;         // add          x17, x1, x2
+			instr_mem[8'hc] = 32'h003888b3;         // add          x17, x17, x3
+			
+			instr_mem[8'hd] = 32'h03184833;         // div          x16, x16, x17
 	end
 endmodule

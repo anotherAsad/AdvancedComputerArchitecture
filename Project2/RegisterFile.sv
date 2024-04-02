@@ -12,8 +12,8 @@ module RegisterFile(
 	output reg  [31:0] dout_r1_B, dout_r2_B,
 	output reg  dtype_r1_B, dtype_r2_B,		// 0 for data, 1 for tag.
 	// CDB input interface
-	input  wire [95:0] CDB_data_serialized,				// comes from the CDB
-	input  wire [23:0] CDB_tag_serialized,
+	input  wire [127:0] CDB_data_serialized,				// comes from the CDB
+	input  wire [031:0] CDB_tag_serialized,
 	// misc. signals.
 	input  wire en, clk, reset
 );
@@ -27,8 +27,8 @@ module RegisterFile(
 	wire [31:0] data_in_CDB [0:3];				// comes from the CDB
 	wire [07:0] tag_in_CDB [0:3];
 
-	assign {tag_in_CDB[0], tag_in_CDB[1], tag_in_CDB[2]} = CDB_tag_serialized;
-	assign {data_in_CDB[0], data_in_CDB[1], data_in_CDB[2]} = CDB_data_serialized;
+	assign {tag_in_CDB[0], tag_in_CDB[1], tag_in_CDB[2],  tag_in_CDB[3]} = CDB_tag_serialized;
+	assign {data_in_CDB[0], data_in_CDB[1], data_in_CDB[2], data_in_CDB[3]} = CDB_data_serialized;
 
 	// *** *** *** *** *** *** *** REG FILE OUTPUT CONTROL *** *** *** *** *** *** *** //
 	always @(*) begin
@@ -97,30 +97,30 @@ module RegisterFile(
 			if(reset)
 				{reg_array[i], reg_valid[i], reg_intag[i]} <= {i[31:0], 1'b1, 8'd0};
 			else if(en) begin
-				// if we have a valid register entry.
-				if(reg_valid[i]) begin
-					if(instr_valid_A && (i == addr_rd_A)) begin
-						reg_array[i] <= 32'd0;
-						reg_valid[i] <= 1'b0; 
-						reg_intag[i] <= rd_tag_A;
-					end
-					else if(instr_valid_B && (i == addr_rd_B)) begin
-						reg_array[i] <= 32'd0;
-						reg_valid[i] <= 1'b0; 
-						reg_intag[i] <= rd_tag_B; 
+				// CDB initiated resolution.
+				for(j=0; j<4; j+=1) begin
+					if(tag_match(reg_intag[i], tag_in_CDB[j])) begin
+						reg_array[i] <= data_in_CDB[j];
+						reg_valid[i] <= 1'b1;
+						reg_intag[i] <= 8'd0;
 					end
 				end
-				else begin			// CDB initiated resolution
-					for(j=0; j<3; j+=1) begin
-						if(tag_match(reg_intag[i], tag_in_CDB[j])) begin
-							reg_array[i] <= data_in_CDB[j];
-							reg_valid[i] <= 1'b1;
-							reg_intag[i] <= 8'd0;
-						end
-					end
+				// Invalidation and renaming. Renaming is prioritised over CDB resolution, because that is better.
+				if(instr_valid_A && (i == addr_rd_A)) begin
+					reg_array[i] <= 32'd0;
+					reg_valid[i] <= 1'b0; 
+					reg_intag[i] <= rd_tag_A;
+				end
+				else if(instr_valid_B && (i == addr_rd_B)) begin
+					reg_array[i] <= 32'd0;
+					reg_valid[i] <= 1'b0; 
+					reg_intag[i] <= rd_tag_B; 
 				end
 			end
 		end
 	end
+
+	wire [07:0] abc = reg_intag[16];
+	wire [07:0] def = reg_intag[17];
 
 endmodule

@@ -1,25 +1,37 @@
 asm = """
-lw		x1, 580(x0)
-lw		x2, 240(x0)
-lw		x3, 98(x0)
-lw		x4, 365(x0)
-add		x1, x5, x7
-add		x1, x1, x5
-mul		x2, x5, x7
-nop
+lw		x1, 11(x0)		# w0
+lw		x2, 15(x0)		# w1
+lw		x3, 22(x0)		# w2
+lw		x4, 45(x0)		# a1
+lw		x5, 62(x0)		# a2
+lw		x6, 79(x0)		# a3
+mul		x10, x1, x4
+mul		x11, x2, x5
+add		x16, x10, x11
+mul		x12, x3, x6
+add		x16, x16, x12
+add		x17, x1, x2
+add		x17, x17, x3
+div		x16, x16, x17
 """
 
 # https://riscvasm.lucasteske.dev/#
 
 machine_code = """
-24402083
-0f002103
-06202183
-16d02203
-007280b3
-005080b3
-02728133
-00000013
+00b02083
+00f02103
+01602183
+02d02203
+03e02283
+04f02303
+02408533
+025105b3
+00b50833
+02618633
+00c80833
+002088b3
+003888b3
+03184833
 """
 
 # Split the multi-line string into a list of lines

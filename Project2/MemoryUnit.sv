@@ -11,7 +11,7 @@ module MemoryUnit(
 	output reg  [07:0] reg_tag_out,
 	// dispatcher interface
 	output wire ready_for_instr,
-	output wire [07:0] acceptor_tag,			// {tag_valid, mem_type, add_type, mul_type, 1'b0, 3'dID}
+	output wire [07:0] acceptor_tag,			// {tag_valid, mem_type, add_type, mul_type, div_type, 3'dID}
 	// misc. signals
 	input  wire en, clk, reset
 );
@@ -37,7 +37,7 @@ module MemoryUnit(
 	end
 
 	assign ready_for_instr = (acceptor_id != 4'd8);
-	assign acceptor_tag = {ready_for_instr, 4'b1000, acceptor_id[2:0]};			// {tag_valid, mem_type, add_type, mul_type, 1'b0, 3'dID}
+	assign acceptor_tag = {ready_for_instr, 4'b1000, acceptor_id[2:0]};			// {tag_valid, mem_type, add_type, mul_type, div_type, 3'dID}
 
 	// *** *** *** *** *** *** READ HANDLING *** *** *** *** *** *** //
 	// writes are consumed to oblivion. Reads will emit a delayed random number.
@@ -78,7 +78,7 @@ module MemoryUnit(
 			// for corresponding offload flag, display data outside.
 			if(CDB_offload[i]) begin
 				data_out = load_buffer_addr[i];
-				reg_tag_out = {1'b1, 3'b100, 1'b0, i[2:0]};
+				reg_tag_out = {1'b1, 4'b1000, i[2:0]};		// {tag_valid, mem_type, add_type, mul_type, div_type, 3'dID}
 				data_out_valid = 1'b1;
 			end
 		end

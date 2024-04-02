@@ -5,15 +5,15 @@ module AdditionReservationStation(
 	input  wire src_in_valid,					// controlled by decoder.
 	input  wire src_in1_type, src_in2_type,		// 0 for data, 1 for tag.
 	// CDB input interface
-	input  wire [95:0] CDB_data_serialized,				// comes from the CDB
-	input  wire [23:0] CDB_tag_serialized,
+	input  wire [127:0] CDB_data_serialized,				// comes from the CDB
+	input  wire [031:0] CDB_tag_serialized,
 	// CDB data_out interface
 	output reg  data_out_valid,
 	output reg  [31:0] data_out,
 	output reg  [07:0] reg_tag_out,
 	// dispatcher interface
 	output wire ready_for_instr,
-	output wire [07:0] acceptor_tag,			// {tag_valid, mem_type, add_type, mul_type, 1'b0, 3'dID}
+	output wire [07:0] acceptor_tag,			// {tag_valid, mem_type, add_type, mul_type, div_type, 3'dID}
 	// misc. signals
 	input  wire en, clk, reset
 );
@@ -37,8 +37,8 @@ module AdditionReservationStation(
 	wire [31:0] data_in_CDB [0:3];				// comes from the CDB
 	wire [07:0] tag_in_CDB [0:3];
 
-	assign {tag_in_CDB[0], tag_in_CDB[1], tag_in_CDB[2]} = CDB_tag_serialized;
-	assign {data_in_CDB[0], data_in_CDB[1], data_in_CDB[2]} = CDB_data_serialized;
+	assign {tag_in_CDB[0], tag_in_CDB[1], tag_in_CDB[2], tag_in_CDB[3]} = CDB_tag_serialized;
+	assign {data_in_CDB[0], data_in_CDB[1], data_in_CDB[2], data_in_CDB[3]} = CDB_data_serialized;
 
 	// *** *** *** *** *** *** *** ADDER AVAILABILITY HANDLING *** *** *** *** *** *** *** //
 	reg  [03:0] next_adder_ID;
@@ -53,7 +53,7 @@ module AdditionReservationStation(
 	end
 
 	assign ready_for_instr = (next_adder_ID != 4'd8);
-	assign acceptor_tag = {ready_for_instr, 4'b0100, next_adder_ID[2:0]};		// {tag_valid, mem_type, add_type, mul_type, 1'b0, 3'dID}
+	assign acceptor_tag = {ready_for_instr, 4'b0100, next_adder_ID[2:0]};		// {tag_valid, mem_type, add_type, mul_type, div_type, 3'dID}
 
 	// *** *** *** *** *** *** *** ADDER OPERATION HANDLING *** *** *** *** *** *** *** //
 	always @(posedge clk) begin
@@ -76,9 +76,19 @@ module AdditionReservationStation(
 						src1_intag[i] <= {1'b0, 7'h0};
 					end
 					else begin
+						// default to set this source set into waiting mode.
 						src1_valid[i] <= 1'b0;
 						src1_value[i] <= 0;
 						src1_intag[i] <= src_in_1[7:0];
+
+						// override due to tag_match over CDB in the same cycle. This is a beautiful corner case.
+						for(j=0; j<4; j+=1) begin
+							if(tag_match(src_in_1[7:0], tag_in_CDB[j])) begin
+								src1_valid[i] <= 1'b1;
+								src1_value[i] <= data_in_CDB[j];
+								src1_intag[i] <= {1'b0, 7'h0};
+							end
+						end
 					end
 
 					// populate the source 2 operands initially. Sourced from regfile this one time.  
@@ -91,6 +101,15 @@ module AdditionReservationStation(
 						src2_valid[i] <= 1'b0;
 						src2_value[i] <= 0;
 						src2_intag[i] <= src_in_2[7:0];
+
+						// override due to tag_match over CDB in the same cycle. This is a beautiful corner case.
+						for(j=0; j<4; j+=1) begin
+							if(tag_match(src_in_2[7:0], tag_in_CDB[j])) begin
+								src2_valid[i] <= 1'b1;
+								src2_value[i] <= data_in_CDB[j];
+								src2_intag[i] <= {1'b0, 7'h0};
+							end
+						end
 					end
 				end
 				else if(src1_valid[i] && src2_valid[i]) begin
@@ -110,7 +129,7 @@ module AdditionReservationStation(
 					end
 				end
 				else begin			// CDB based source population control
-					for(j=0; j<3; j+=1) begin
+					for(j=0; j<4; j+=1) begin
 						// operate on tag matches for src1
 						if(!src1_valid[i] && tag_match(src1_intag[i], tag_in_CDB[j])) begin
 							src1_valid[i] <= 1'b1;
@@ -144,9 +163,22 @@ module AdditionReservationStation(
 			// for corresponding offload flag, display data outside.
 			if(CDB_offload[i]) begin
 				data_out = src1_value[i] + src2_value[i];
-				reg_tag_out = {1'b1, 3'b010, 1'b0, i[2:0]};
+				reg_tag_out = {1'b1, 4'b0100, i[2:0]};		// {tag_valid, mem_type, add_type, mul_type, div_type, 3'dID}
 				data_out_valid = 1'b1;
 			end
 		end
 	end
+
+	// *** *** *** *** *** *** *** VISIBILITY INTO UNIT 1 *** *** *** *** *** *** *** //
+	wire zCDB_offload_u1 = CDB_offload[0];
+	wire [00:0] zadder_busy_u1 = adder_busy[0];		
+	wire [02:0] zadder_cntr_u1 = adder_cntr[0];
+	
+	wire [00:0] zsrc1_valid_u1 = src1_valid[0];
+	wire [07:0] zsrc1_intag_u1 = src1_intag[0];
+	wire [31:0] zsrc1_value_u1 = src1_value[0];
+
+	wire [00:0] zsrc2_valid_u1 = src2_valid[0];
+	wire [07:0] zsrc2_intag_u1 = src2_intag[0];
+	wire [31:0] zsrc2_value_u1 = src2_value[0];
 endmodule

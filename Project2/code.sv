@@ -20,10 +20,10 @@ module testbench;
 	wire [04:0] instr1_rs2, instr2_rs2;
 	wire instr1_valid, instr2_valid;
 	// CDB arbitrator interface
-	wire instr1_isadd, instr1_ismul, instr1_ismem;	// instruction 1 flags for valid instruction type. One-hot: Only 1 is true.
-	wire instr2_isadd, instr2_ismul, instr2_ismem;	// instruction 2 flags for valid instruction type. One-hot: Only 1 is true.
+	wire instr1_isadd, instr1_ismul, instr1_ismem, instr1_isdiv;	// instruction 1 flags for valid instruction type. One-hot: Only 1 is true.
+	wire instr2_isadd, instr2_ismul, instr2_ismem, instr2_isdiv;	// instruction 2 flags for valid instruction type. One-hot: Only 1 is true.
 	// status of reservation stations
-	wire mem_ready, adder_ready, multiplier_ready;
+	wire mem_ready, adder_ready, multiplier_ready, divider_ready;
 
 	dispatch_and_decode_unit dispatch_and_decode_unit_inst(
 		// instr queue interface
@@ -35,19 +35,20 @@ module testbench;
 		.instr1_rs2(instr1_rs2), .instr2_rs2(instr2_rs2),
 		.instr1_valid(instr1_valid), .instr2_valid(instr2_valid),
 		// CDB arbitrator interface
-		.instr1_ismem(instr1_ismem), .instr1_isadd(instr1_isadd), .instr1_ismul(instr1_ismul),		// one-hot
-		.instr2_ismem(instr2_ismem), .instr2_isadd(instr2_isadd), .instr2_ismul(instr2_ismul),		// one-hot
+		.instr1_ismem(instr1_ismem), .instr1_isadd(instr1_isadd), .instr1_ismul(instr1_ismul), .instr1_isdiv(instr1_isdiv),	// one-hot
+		.instr2_ismem(instr2_ismem), .instr2_isadd(instr2_isadd), .instr2_ismul(instr2_ismul), .instr2_isdiv(instr2_isdiv),	// one-hot
 		// status of reservation stations
-		.mem_ready(mem_ready), .adder_ready(adder_ready), .multiplier_ready(multiplier_ready)
+		.mem_ready(mem_ready), .adder_ready(adder_ready), .multiplier_ready(multiplier_ready), .divider_ready(divider_ready)
 	);
 
 	// Effective CDB resolved tag and data.
-	wire [23:0] CDB_tag_serialized;
-	wire [95:0] CDB_data_serialized;
-	wire [07:0] CDB_tag_multiplier, CDB_tag_adder, CDB_tag_mem;				// CDB resolved tag input
-	wire [31:0] CDB_data_multiplier, CDB_data_adder, CDB_data_mem;			// CDB resolved data input
+	wire [031:0] CDB_tag_serialized;
+	wire [127:0] CDB_data_serialized;
+
+	wire [07:0] CDB_tag_multiplier, CDB_tag_adder, CDB_tag_mem, CDB_tag_divider;				// CDB resolved tag input
+	wire [31:0] CDB_data_multiplier, CDB_data_adder, CDB_data_mem, CDB_data_divider;			// CDB resolved data input
 	// rd_tag interface.
-	wire [7:0] acceptor_tag_add, acceptor_tag_mul, acceptor_tag_mem; 
+	wire [7:0] acceptor_tag_add, acceptor_tag_mul, acceptor_tag_mem, acceptor_tag_div; 
 	wire [7:0] regfile_rd_tag_A, regfile_rd_tag_B; 		// regfile bound rd tags
 
 	CDB_bus_controller CDB_bus_controller_inst(
@@ -58,15 +59,18 @@ module testbench;
 		.CDB_tag_multiplier(CDB_tag_multiplier),
 		.CDB_tag_adder(CDB_tag_adder),
 		.CDB_tag_mem(CDB_tag_mem),
+		.CDB_tag_divider(CDB_tag_divider),
 		.CDB_data_multiplier(CDB_data_multiplier),
 		.CDB_data_adder(CDB_data_adder),
 		.CDB_data_mem(CDB_data_mem),
+		.CDB_data_divider(CDB_data_divider),
 		// rd_tag interface.
-		.instr1_isadd(instr1_isadd), .instr1_ismul(instr1_ismul), .instr1_ismem(instr1_ismem),	// instruction 1 flags for valid instruction type. One-hot: Only 1 is true.
-		.instr2_isadd(instr2_isadd), .instr2_ismul(instr2_ismul), .instr2_ismem(instr2_ismem),	// instruction 2 flags for valid instruction type. One-hot: Only 1 is true.
+		.instr1_isadd(instr1_isadd), .instr1_ismul(instr1_ismul), .instr1_ismem(instr1_ismem), .instr1_isdiv(instr1_isdiv),	// instruction 1 flags for valid instruction type. One-hot: Only 1 is true.
+		.instr2_isadd(instr2_isadd), .instr2_ismul(instr2_ismul), .instr2_ismem(instr2_ismem), .instr2_isdiv(instr2_isdiv), // instruction 2 flags for valid instruction type. One-hot: Only 1 is true.
 		.acceptor_tag_add(acceptor_tag_add),
 		.acceptor_tag_mul(acceptor_tag_mul),
 		.acceptor_tag_mem(acceptor_tag_mem), 
+		.acceptor_tag_div(acceptor_tag_div), 
 		.regfile_rd_tag_A(regfile_rd_tag_A), .regfile_rd_tag_B(regfile_rd_tag_B)	// regfile bound rd tags
 	);
 
@@ -206,7 +210,44 @@ module testbench;
 		.en(1'b1), .clk(clk), .reset(reset)
 	);
 
-	
+	// *** *** *** *** *** *** DIVIDER SETUP *** *** *** *** *** *** //
+	wire [31:0] rs1_div, rs2_div;
+	wire dtype_rs1_div, dtype_rs2_div;
+
+	source_mux div_source_mux(
+		// instruction 1
+		.instr1_rs1(dout_r1_A), .instr1_rs2(dout_r2_A),		// has tag in lower byte if needed
+		.instr1_dtype_rs1(dtype_r1_A), .instr1_dtype_rs2(dtype_r2_A),
+		// instruction 2
+		.instr2_rs1(dout_r1_B), .instr2_rs2(dout_r2_B),		// has tag in lower byte if needed
+		.instr2_dtype_rs1(dtype_r1_B), .instr2_dtype_rs2(dtype_r2_B),
+		// mux output
+		.rs1(rs1_div), .rs2(rs2_div),
+		.dtype_rs1(dtype_rs1_div), .dtype_rs2(dtype_rs2_div),
+		// instruction sel
+		.instr1_active(instr1_isdiv),
+		.instr2_active(instr2_isdiv)
+	);
+
+	DividerReservationStation DividerReservationStation_inst(
+		// Register input interface
+		.src_in_1(rs1_div), .src_in_2(rs2_div),							// comes from regfile. Lower 8 bits are used for tag if the regfile says so, else this is data.
+		.src_in_valid(instr1_isdiv | instr2_isdiv),						// controlled by decoder.
+		.src_in1_type(dtype_rs1_div), .src_in2_type(dtype_rs2_div),		// 0 for data, 1 for tag.
+		// CDB input interface
+		.CDB_data_serialized(CDB_data_serialized),				// comes from the CDB
+		.CDB_tag_serialized(CDB_tag_serialized),
+		// CDB data_out interface
+		.data_out_valid(),
+		.data_out(CDB_data_divider),
+		.reg_tag_out(CDB_tag_divider),
+		// dispatcher interface
+		.ready_for_instr(divider_ready),
+		.acceptor_tag(acceptor_tag_div),			// {tag_valid, mem_type, add_type, div_type, 2'b0, 3'dID}
+		// misc. signals
+		.en(1'b1), .clk(clk), .reset(reset)
+	);
+
 	initial begin
 		$dumpfile("test.vcd");
 		$dumpvars(0, testbench);
